@@ -14,6 +14,39 @@ use Illuminate\Support\Facades\Log;
 
 class AdminProductController extends Controller
 {
+    // Fungsi upload ke ImgBB
+    private function uploadToImgBB($base64Image)
+    {
+        $apiKey = env('d2ee683e13f5c0babd3cdce58f1c7ac7');
+        
+        // Remove base64 header if exists
+        if (preg_match('/^data:image\/(\w+);base64,/', $base64Image)) {
+            $base64Image = preg_replace('/^data:image\/\w+;base64,/', '', $base64Image);
+        }
+        
+        $curl = curl_init();
+        
+        curl_setopt_array($curl, [
+            CURLOPT_URL => "https://api.imgbb.com/1/upload?key={$apiKey}",
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => ['image' => $base64Image],
+            CURLOPT_SSL_VERIFYPEER => false,
+        ]);
+        
+        $response = curl_exec($curl);
+        $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+        curl_close($curl);
+        
+        if ($httpCode !== 200) {
+            Log::error('ImgBB upload failed', ['http_code' => $httpCode, 'response' => $response]);
+            return null;
+        }
+        
+        $data = json_decode($response, true);
+        return $data['data']['url'] ?? null;
+    }
+
     // List semua produk
     public function index()
     {
@@ -37,34 +70,15 @@ class AdminProductController extends Controller
         $thumbnailPath = $request->thumbnail;
         
         // Cek apakah thumbnail adalah base64 image (upload dari file)
-        if ($request->thumbnail && preg_match('/^data:image\/(\w+);base64,/', $request->thumbnail, $matches)) {
+        if ($request->thumbnail && preg_match('/^data:image\/(\w+);base64,/', $request->thumbnail)) {
             try {
-                // Decode base64
-                $imageData = base64_decode(preg_replace('#^data:image/\w+;base64,#', '', $request->thumbnail));
+                $uploadedUrl = $this->uploadToImgBB($request->thumbnail);
                 
-                // Validasi: pastikan $imageData tidak kosong
-                if (empty($imageData)) {
-                    return response()->json(['error' => 'Gambar corrupt, coba upload ulang'], 400);
+                if ($uploadedUrl) {
+                    $thumbnailPath = $uploadedUrl;
+                } else {
+                    return response()->json(['error' => 'Gagal upload gambar ke ImgBB'], 500);
                 }
-                
-                $extension = $matches[1] === 'jpeg' ? 'jpg' : $matches[1];
-                $filename = time() . '_' . uniqid() . '.' . $extension;
-                
-                $destinationPath = public_path('images/products');
-                if (!file_exists($destinationPath)) {
-                    mkdir($destinationPath, 0777, true);
-                }
-                
-                // Simpan file
-                $bytesWritten = file_put_contents($destinationPath . '/' . $filename, $imageData);
-                
-                // Validasi: pastikan file berhasil disimpan
-                if ($bytesWritten === false || $bytesWritten === 0) {
-                    return response()->json(['error' => 'Gagal menyimpan gambar'], 500);
-                }
-                
-                $thumbnailPath = '/images/products/' . $filename;
-                
             } catch (\Exception $e) {
                 Log::error('Upload gambar error: ' . $e->getMessage());
                 return response()->json(['error' => 'Gagal memproses gambar: ' . $e->getMessage()], 500);
@@ -111,55 +125,19 @@ class AdminProductController extends Controller
         $thumbnailPath = $product->thumbnail;
         
         // Cek apakah thumbnail adalah base64 image (upload dari file)
-        if ($request->thumbnail && preg_match('/^data:image\/(\w+);base64,/', $request->thumbnail, $matches)) {
+        if ($request->thumbnail && preg_match('/^data:image\/(\w+);base64,/', $request->thumbnail)) {
             try {
-                // Hapus gambar lama jika ada dan bukan URL eksternal
-                if ($product->thumbnail && str_starts_with($product->thumbnail, '/images/products/')) {
-                    $oldPath = public_path($product->thumbnail);
-                    if (file_exists($oldPath)) {
-                        unlink($oldPath);
-                    }
+                $uploadedUrl = $this->uploadToImgBB($request->thumbnail);
+                
+                if ($uploadedUrl) {
+                    $thumbnailPath = $uploadedUrl;
+                } else {
+                    return response()->json(['error' => 'Gagal upload gambar ke ImgBB'], 500);
                 }
-                
-                // Decode base64
-                $imageData = base64_decode(preg_replace('#^data:image/\w+;base64,#', '', $request->thumbnail));
-                
-                // Validasi: pastikan $imageData tidak kosong
-                if (empty($imageData)) {
-                    return response()->json(['error' => 'Gambar corrupt, coba upload ulang'], 400);
-                }
-                
-                $extension = $matches[1] === 'jpeg' ? 'jpg' : $matches[1];
-                $filename = time() . '_' . uniqid() . '.' . $extension;
-                
-                $destinationPath = public_path('images/products');
-                if (!file_exists($destinationPath)) {
-                    mkdir($destinationPath, 0777, true);
-                }
-                
-                // Simpan file
-                $bytesWritten = file_put_contents($destinationPath . '/' . $filename, $imageData);
-                
-                // Validasi: pastikan file berhasil disimpan
-                if ($bytesWritten === false || $bytesWritten === 0) {
-                    return response()->json(['error' => 'Gagal menyimpan gambar'], 500);
-                }
-                
-                $thumbnailPath = '/images/products/' . $filename;
-                
             } catch (\Exception $e) {
                 Log::error('Upload gambar error: ' . $e->getMessage());
                 return response()->json(['error' => 'Gagal memproses gambar: ' . $e->getMessage()], 500);
             }
-        } elseif ($request->thumbnail === null || $request->thumbnail === '') {
-            // Jika thumbnail dihapus (null atau empty string)
-            if ($product->thumbnail && str_starts_with($product->thumbnail, '/images/products/')) {
-                $oldPath = public_path($product->thumbnail);
-                if (file_exists($oldPath)) {
-                    unlink($oldPath);
-                }
-            }
-            $thumbnailPath = null;
         }
 
         $product->update([
@@ -180,42 +158,24 @@ class AdminProductController extends Controller
         return response()->json($product);
     }
 
-    // Delete product - FIXED with cascade delete
+    // Delete product
     public function destroy($id)
     {
         try {
             $product = Product::findOrFail($id);
             
             // Hapus semua relasi sebelum menghapus produk
-            // 1. Hapus dari booking_items
             BookingItem::where('product_id', $id)->delete();
-            
-            // 2. Hapus dari wishlists
             Wishlist::where('product_id', $id)->delete();
-            
-            // 3. Hapus dari reviews
             Review::where('product_id', $id)->delete();
             
-            // Hapus file gambar jika ada dan bukan URL eksternal
-            if ($product->thumbnail && str_starts_with($product->thumbnail, '/images/products/')) {
-                $imagePath = public_path($product->thumbnail);
-                if (file_exists($imagePath)) {
-                    @unlink($imagePath);
-                }
-            }
-            
-            // Hapus produk
             $product->delete();
             
-            return response()->json([
-                'message' => 'Produk berhasil dihapus'
-            ]);
+            return response()->json(['message' => 'Produk berhasil dihapus']);
             
         } catch (\Exception $e) {
             Log::error('Delete product error: ' . $e->getMessage());
-            return response()->json([
-                'error' => 'Gagal menghapus produk: ' . $e->getMessage()
-            ], 500);
+            return response()->json(['error' => 'Gagal menghapus produk: ' . $e->getMessage()], 500);
         }
     }
 }
