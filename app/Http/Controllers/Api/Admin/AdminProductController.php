@@ -17,7 +17,7 @@ class AdminProductController extends Controller
     // Fungsi upload ke ImgBB
     private function uploadToImgBB($base64Image)
     {
-        $apiKey = env('d2ee683e13f5c0babd3cdce58f1c7ac7');
+        $apiKey = env('IMGBB_API_KEY');
         
         // Remove base64 header if exists
         if (preg_match('/^data:image\/(\w+);base64,/', $base64Image)) {
