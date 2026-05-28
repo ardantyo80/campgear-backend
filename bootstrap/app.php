@@ -17,6 +17,8 @@ return Application::configure(basePath: dirname(__DIR__))
         // nocache
         $middleware->append(\App\Http\Middleware\NoCacheForImages::class);
 
+        
+
         // Alias middleware
         $middleware->alias([
             'admin' => \App\Http\Middleware\AdminMiddleware::class,
@@ -27,6 +29,8 @@ return Application::configure(basePath: dirname(__DIR__))
             \Illuminate\Http\Middleware\HandleCors::class,
         ]);
     })
+
+    
 
     ->withExceptions(function (Exceptions $exceptions) {
         //
