@@ -34,6 +34,7 @@ class BookingController extends Controller
 
         $user = $request->user();
         
+        // Hitung total hari
         $startDate = new \DateTime($request->start_date);
         $endDate = new \DateTime($request->end_date);
         $totalDays = $startDate->diff($endDate)->days;
@@ -52,9 +53,14 @@ class BookingController extends Controller
             foreach ($request->items as $item) {
                 $product = Product::findOrFail($item['product_id']);
                 
+                // Cek stok
                 if ($product->stock < $item['quantity']) {
                     throw new \Exception("Product {$product->name} stock is insufficient");
                 }
+                
+                // ✅ KURANGI STOK
+                $product->stock -= $item['quantity'];
+                $product->save();
 
                 $subtotal = $item['quantity'] * $product->price_per_day * $totalDays;
                 $totalPrice += $subtotal;
@@ -67,6 +73,7 @@ class BookingController extends Controller
                 ];
             }
 
+            // Create booking
             $booking = Booking::create([
                 'booking_number' => $bookingNumber,
                 'user_id' => $user->id,
@@ -79,6 +86,7 @@ class BookingController extends Controller
                 'notes' => $request->notes,
             ]);
 
+            // Create booking items
             foreach ($bookingItems as $item) {
                 $booking->items()->create($item);
             }
@@ -198,7 +206,7 @@ class BookingController extends Controller
         return response()->json($booking);
     }
 
-    // Cancel booking
+    // Cancel booking (if still pending) - ✅ RETURN STOCK
     public function cancel(Request $request, $id)
     {
         $booking = Booking::findOrFail($id);
@@ -211,6 +219,15 @@ class BookingController extends Controller
             return response()->json(['error' => 'Booking cannot be cancelled'], 422);
         }
 
+        // ✅ KEMBALIKAN STOK
+        foreach ($booking->items as $item) {
+            $product = Product::find($item->product_id);
+            if ($product) {
+                $product->stock += $item->quantity;
+                $product->save();
+            }
+        }
+
         $booking->update([
             'status' => 'cancelled',
             'payment_status' => 'expired',
@@ -219,7 +236,7 @@ class BookingController extends Controller
         return response()->json(['message' => 'Booking cancelled successfully']);
     }
 
-    // Midtrans webhook handler
+    // Midtrans webhook handler - ✅ RETURN STOCK if expired
     public function webhook(Request $request)
     {
         Log::info('Webhook received:', $request->all());
@@ -283,12 +300,20 @@ class BookingController extends Controller
                 ]);
                 Log::info('Booking updated to pending', ['booking_number' => $booking->booking_number]);
             } elseif (in_array($transactionStatus, ['deny', 'cancel', 'expire'])) {
+                // ✅ KEMBALIKAN STOK JIKA PAYMENT EXPIRED/DENY/CANCEL
+                foreach ($booking->items as $item) {
+                    $product = Product::find($item->product_id);
+                    if ($product) {
+                        $product->stock += $item->quantity;
+                        $product->save();
+                    }
+                }
+                
                 $booking->update([
                     'payment_status' => 'expired',
                     'status' => 'cancelled',
-                    'midtrans_transaction_id' => $notification['transaction_id'] ?? null
                 ]);
-                Log::info('Booking cancelled/expired', ['booking_number' => $booking->booking_number]);
+                Log::info('Booking cancelled/expired - stock returned', ['booking_number' => $booking->booking_number]);
             }
             
             return response()->json(['message' => 'Webhook processed successfully']);
